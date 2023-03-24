@@ -1,7 +1,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::{decode_helper::DecodeHelper, ThriftBackend};
+use super::{
+    decode_helper::{DecodeHelper, EncodeHelper},
+    ThriftBackend,
+};
 use crate::{
     db::RirDatabase,
     middle::{rir, ty, ty::Ty},
@@ -117,6 +120,7 @@ impl ThriftBackend {
         &self,
         id: i16,
         ty: &Ty,
+        helper: &EncodeHelper,
         ident: &TokenStream,
     ) -> TokenStream {
         match &ty.kind {
@@ -174,8 +178,14 @@ impl ThriftBackend {
             ty::Path(p) if self.is_i32_enum(p.did) => {
                 quote! { protocol.write_i32_field(#id, (*#ident).into())?; }
             }
-            ty::Path(_) => quote! { protocol.write_struct_field(#id, #ident)?; },
-            ty::Arc(ty) => self.codegen_encode_field(id, ty, ident),
+            ty::Path(_) => {
+                if helper.borrowed_message {
+                    quote! { protocol.write_struct_field(#id, *#ident.borrow())?; }
+                } else {
+                    quote! { protocol.write_struct_field(#id, #ident)?; }
+                }
+            }
+            ty::Arc(ty) => self.codegen_encode_field(id, ty, helper, ident),
             _ => unimplemented!(),
         }
     }
@@ -236,7 +246,13 @@ impl ThriftBackend {
         }
     }
 
-    pub(crate) fn codegen_field_size(&self, ty: &Ty, id: i16, ident: &TokenStream) -> TokenStream {
+    pub(crate) fn codegen_field_size(
+        &self,
+        ty: &Ty,
+        id: i16,
+        helper: &EncodeHelper,
+        ident: &TokenStream,
+    ) -> TokenStream {
         match &ty.kind {
             ty::String => quote! { protocol.write_string_field_len(Some(#id), &#ident) },
             ty::FastStr => quote! { protocol.write_faststr_field_len(Some(#id), #ident) },
@@ -285,8 +301,14 @@ impl ThriftBackend {
             ty::Path(p) if self.is_i32_enum(p.did) => {
                 quote! { protocol.write_i32_field_len(Some(#id), (*#ident).into()) }
             }
-            ty::Path(_) => quote! { protocol.write_struct_field_len(Some(#id), #ident) },
-            ty::Arc(ty) => self.codegen_field_size(ty, id, ident),
+            ty::Path(_) => {
+                if helper.borrowed_message {
+                    quote! { protocol.write_struct_field_len(Some(#id), *#ident.borrow()) }
+                } else {
+                    quote! { protocol.write_struct_field_len(Some(#id), #ident) }
+                }
+            }
+            ty::Arc(ty) => self.codegen_field_size(ty, id, helper, ident),
             _ => unimplemented!(),
         }
     }

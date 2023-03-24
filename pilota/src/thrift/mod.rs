@@ -77,6 +77,9 @@ pub trait TInputProtocol {
     type Buf: Buf;
     /// Read the beginning of a Thrift message.
     fn read_message_begin(&mut self) -> Result<TMessageIdentifier, DecodeError>;
+
+    fn get_message_ident(&self) -> Option<&TMessageIdentifier>;
+
     /// Read the end of a Thrift message.
     fn read_message_end(&mut self) -> Result<(), DecodeError>;
     /// Read the beginning of a Thrift struct.
@@ -635,6 +638,8 @@ pub trait TOutputProtocol {
 pub trait TAsyncInputProtocol: Send {
     /// Read the beginning of a Thrift message.
     async fn read_message_begin(&mut self) -> Result<TMessageIdentifier, DecodeError>;
+
+    fn get_message_ident(&self) -> Option<&TMessageIdentifier>;
 
     /// Read the end of a Thrift message.
     async fn read_message_end(&mut self) -> Result<(), DecodeError>;

@@ -17,6 +17,7 @@ use crate::{
         ty::{AdtDef, AdtKind, CodegenTy},
     },
     symbol::{DefId, EnumRepr, IdentName},
+    tags::GenericArgs,
     Context,
 };
 
@@ -59,7 +60,9 @@ where
     pub fn write_struct(&mut self, def_id: DefId, stream: &mut TokenStream, s: &rir::Message) {
         let name = self.rust_name(def_id).as_syn_ident();
 
-        let fields = s.fields.iter().map(|f| {
+        let should_use_generic_args = self.cx.node_tags(def_id).unwrap().contains::<GenericArgs>();
+
+        let fields = s.fields.iter().enumerate().map(|(i, f)| {
             let name = self.rust_name(f.did).as_syn_ident();
             let adjust = self.adjust(f.did);
             let ty = self.codegen_item_ty(f.ty.kind.clone());
@@ -75,6 +78,11 @@ where
                 ty = quote::quote! { ::std::option::Option<#ty> }
             }
 
+            if should_use_generic_args {
+                let arg_ident = (&*format!("Arg{}", i + 1)).as_syn_ident();
+                ty = quote::quote! { #arg_ident }
+            }
+
             let attrs = adjust.iter().flat_map(|a| a.attrs());
 
             quote::quote! {
@@ -85,9 +93,19 @@ where
 
         let lifetime = self.zero_copy.then(|| quote!(<'de>)).into_iter();
 
+        let generic_args = if should_use_generic_args {
+            let args = s.fields.iter().enumerate().map(|(i, _)| {
+                let arg_ident = (&*format!("Arg{}", i + 1)).as_syn_ident();
+                quote!(#arg_ident)
+            });
+            quote!(<#(#args),*>)
+        } else {
+            quote!()
+        };
+
         stream.extend(quote::quote! {
             #[derive(Clone, PartialEq)]
-            pub struct #name #(#lifetime)* {
+            pub struct #name #generic_args {
                 #(#fields)*
             }
         });

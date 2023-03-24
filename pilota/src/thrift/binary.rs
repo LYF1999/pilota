@@ -21,7 +21,7 @@ static VERSION_MASK: u32 = 0xffff0000;
 
 pub struct TBinaryProtocol<T> {
     pub(crate) trans: T,
-
+    message_ident: Option<TMessageIdentifier>,
     zero_copy: bool,
     zero_copy_len: usize,
 }
@@ -32,6 +32,7 @@ impl<T> TBinaryProtocol<T> {
     #[inline]
     pub fn new(trans: T, zero_copy: bool) -> Self {
         Self {
+            message_ident: None,
             trans,
             zero_copy,
             zero_copy_len: 0,
@@ -562,6 +563,7 @@ impl TOutputProtocol for TBinaryProtocol<&mut LinkedBytes> {
 
 pub struct TAsyncBinaryProtocol<R> {
     reader: R,
+    msg_ident: Option<TMessageIdentifier>,
 }
 
 #[async_trait::async_trait]
@@ -599,7 +601,13 @@ where
         let name = self.read_faststr().await?;
 
         let sequence_number = self.read_i32().await?;
-        Ok(TMessageIdentifier::new(name, message_type, sequence_number))
+        let ident = TMessageIdentifier::new(name, message_type, sequence_number);
+        self.msg_ident = Some(ident.clone());
+        Ok(ident)
+    }
+
+    fn get_message_ident(&self) -> Option<&TMessageIdentifier> {
+        self.msg_ident.as_ref()
     }
 
     #[inline]
@@ -769,7 +777,10 @@ where
     R: AsyncRead + Unpin + Send,
 {
     pub fn new(reader: R) -> Self {
-        Self { reader }
+        Self {
+            reader,
+            msg_ident: None,
+        }
     }
 }
 
@@ -805,7 +816,9 @@ impl TInputProtocol for TBinaryProtocol<&mut BytesMut> {
         let name = self.read_faststr()?;
 
         let sequence_number = self.read_i32()?;
-        Ok(TMessageIdentifier::new(name, message_type, sequence_number))
+        let ident = TMessageIdentifier::new(name, message_type, sequence_number);
+        self.message_ident = Some(ident.clone());
+        Ok(ident)
     }
 
     #[inline]
@@ -961,5 +974,9 @@ impl TInputProtocol for TBinaryProtocol<&mut BytesMut> {
     fn read_bytes_vec(&mut self) -> Result<Vec<u8>, DecodeError> {
         let len = self.trans.read_i32()? as usize;
         Ok(self.trans.split_to(len).into())
+    }
+
+    fn get_message_ident(&self) -> Option<&TMessageIdentifier> {
+        self.message_ident.as_ref()
     }
 }

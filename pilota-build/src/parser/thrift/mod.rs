@@ -15,7 +15,7 @@ use crate::{
     ir,
     ir::{Arg, Enum, EnumVariant, FieldKind, File, Item, ItemKind, Path},
     symbol::{EnumRepr, FileId, Ident},
-    tags::{Annotation, PilotaName, RustType, RustWrapperArc, Tags},
+    tags::{self, Annotation, GenericArgs, PilotaName, RustType, RustWrapperArc, Tags},
     ty::{BytesRepr, StringRepr},
     util::error_abort,
 };
@@ -208,12 +208,13 @@ impl ThriftLower {
                 method_name.to_upper_camel_case()
             )
             .into();
+
             let kind = ir::ItemKind::Message(ir::Message {
                 name: name.clone(),
                 fields: f.arguments.iter().map(|a| self.lower_field(a)).collect(),
             });
             related_items.push(name);
-            result.push(self.mk_item(kind, Default::default()));
+            result.push(self.mk_item(kind, crate::tags! { GenericArgs }.into()));
 
             let name: Ident = format!(
                 "{}{}ArgsRecv",

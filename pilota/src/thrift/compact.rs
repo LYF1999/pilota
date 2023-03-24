@@ -951,7 +951,7 @@ impl TOutputProtocol for TCompactOutputProtocol<&mut LinkedBytes> {
 
 pub struct TAsyncCompactProtocol<R> {
     reader: R,
-
+    msg_ident: Option<TMessageIdentifier>,
     last_read_field_id: i16,
     read_field_id_stack: Vec<i16>,
     pending_read_bool_value: Option<bool>,
@@ -993,7 +993,14 @@ where
         let sequence_number = self.read_varint_async::<u32>().await? as i32;
         let name = self.read_faststr().await?;
 
-        Ok(TMessageIdentifier::new(name, message_type, sequence_number))
+        let ident = TMessageIdentifier::new(name, message_type, sequence_number);
+        self.msg_ident = Some(ident.clone());
+
+        Ok(ident)
+    }
+
+    fn get_message_ident(&self) -> Option<&TMessageIdentifier> {
+        self.msg_ident.as_ref()
     }
 
     #[inline]
@@ -1195,6 +1202,7 @@ where
 {
     pub fn new(reader: R) -> TAsyncCompactProtocol<R> {
         Self {
+            msg_ident: None,
             reader,
             last_read_field_id: 0,
             read_field_id_stack: Vec::new(),
@@ -1231,6 +1239,8 @@ where
 pub struct TCompactInputProtocol<T> {
     pub(crate) trans: T,
 
+    msg_ident: Option<TMessageIdentifier>,
+
     // Identifier of the last field deserialized for a struct.
     last_read_field_id: i16,
     // Stack of the last read field ids (a new entry is added each time a nested struct is read).
@@ -1248,6 +1258,7 @@ impl<T> TCompactInputProtocol<T> {
             last_read_field_id: 0,
             read_field_id_stack: Vec::with_capacity(24),
             pending_read_bool_value: None,
+            msg_ident: None,
         }
     }
 }
@@ -1313,7 +1324,13 @@ impl TInputProtocol for TCompactInputProtocol<&mut BytesMut> {
         let sequence_number = self.read_varint::<u32>()? as i32;
         let name = self.read_faststr()?;
 
-        Ok(TMessageIdentifier::new(name, message_type, sequence_number))
+        let ident = TMessageIdentifier::new(name, message_type, sequence_number);
+
+        Ok(ident)
+    }
+
+    fn get_message_ident(&self) -> Option<&TMessageIdentifier> {
+        self.msg_ident.as_ref()
     }
 
     #[inline]

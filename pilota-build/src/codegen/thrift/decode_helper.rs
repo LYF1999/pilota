@@ -6,6 +6,11 @@ pub struct DecodeHelper {
     pub is_async: bool,
 }
 
+#[derive(Default)]
+pub struct EncodeHelper {
+    pub borrowed_message: bool,
+}
+
 impl DecodeHelper {
     pub fn new(is_async: bool) -> Self {
         Self { is_async }

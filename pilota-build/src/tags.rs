@@ -112,6 +112,8 @@ pub mod thrift {
     pub struct EntryMessage;
 }
 
+pub struct GenericArgs;
+
 #[derive(Clone)]
 pub struct PilotaName(pub FastStr);
 

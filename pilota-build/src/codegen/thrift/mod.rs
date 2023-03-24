@@ -5,17 +5,19 @@ use quote::quote;
 
 use super::traits::CodegenBackend;
 use crate::{
+    db::RirDatabase,
     middle::{
         context::Context,
         rir::{self, Enum, Field, Message, Method, NewType, Service},
     },
     symbol::{DefId, EnumRepr, IdentName},
-    tags::thrift::EntryMessage,
+    tags::{thrift::EntryMessage, GenericArgs},
 };
 
 mod ty;
 
 pub use self::decode_helper::DecodeHelper;
+use self::decode_helper::EncodeHelper;
 
 mod decode_helper;
 
@@ -40,6 +42,7 @@ impl Deref for ThriftBackend {
 impl ThriftBackend {
     fn codegen_encode_fields_size<'a>(
         &'a self,
+        helper: &'a EncodeHelper,
         fields: &'a [Arc<rir::Field>],
     ) -> impl Iterator<Item = TokenStream> + 'a {
         fields.iter().map(|f| {
@@ -47,9 +50,9 @@ impl ThriftBackend {
             let is_optional = f.is_optional();
             let field_id = f.id as i16;
             let write_field = if is_optional {
-                self.codegen_field_size(&f.ty, field_id, &quote! { value })
+                self.codegen_field_size(&f.ty, field_id, helper, &quote! { value })
             } else {
-                self.codegen_field_size(&f.ty, field_id, &quote! { &self.#field_name })
+                self.codegen_field_size(&f.ty, field_id, helper, &quote! { &self.#field_name })
             };
 
             if is_optional {
@@ -64,6 +67,7 @@ impl ThriftBackend {
 
     fn codegen_encode_fields<'a>(
         &'a self,
+        helper: &'a EncodeHelper,
         fields: &'a [Arc<rir::Field>],
     ) -> impl Iterator<Item = TokenStream> + 'a {
         fields.iter().map(|f| {
@@ -71,9 +75,9 @@ impl ThriftBackend {
             let field_id = f.id as i16;
             let is_optional = f.is_optional();
             let write_field = if is_optional {
-                self.codegen_encode_field(field_id, &f.ty, &quote!(value))
+                self.codegen_encode_field(field_id, &f.ty, helper, &quote!(value))
             } else {
-                self.codegen_encode_field(field_id, &f.ty, &quote!(&self.#field_name))
+                self.codegen_encode_field(field_id, &f.ty, helper, &quote!(&self.#field_name))
             };
 
             if is_optional {
@@ -92,15 +96,17 @@ impl ThriftBackend {
 
     fn codegen_impl_message(
         &self,
-        name: &Ident,
+        name: TokenStream,
+        generic_params: TokenStream,
         encode: TokenStream,
         size: TokenStream,
         decode: TokenStream,
         decode_async: TokenStream,
+        type_bounds: TokenStream,
     ) -> TokenStream {
         quote! {
             #[::async_trait::async_trait]
-            impl ::pilota::thrift::Message for #name {
+            impl #generic_params ::pilota::thrift::Message for #name #type_bounds {
                 fn encode<T: ::pilota::thrift::TOutputProtocol>(
                     &self,
                     protocol: &mut T,
@@ -135,10 +141,100 @@ impl ThriftBackend {
         encode: TokenStream,
         size: TokenStream,
         decode: F,
+        type_bounds: TokenStream,
     ) -> TokenStream {
         let decode_stream = decode(&DecodeHelper::new(false));
         let decode_async_stream = decode(&DecodeHelper::new(true));
-        self.codegen_impl_message(name, encode, size, decode_stream, decode_async_stream)
+        self.codegen_impl_message(
+            quote!(#name),
+            quote!(),
+            encode,
+            size,
+            decode_stream,
+            decode_async_stream,
+            type_bounds,
+        )
+    }
+
+    fn codegen_struct_impl_message_with_helper<F: Fn(&DecodeHelper) -> TokenStream>(
+        &self,
+        def_id: DefId,
+        encode: impl Fn(&EncodeHelper) -> TokenStream,
+        size: impl Fn(&EncodeHelper) -> TokenStream,
+        decode: F,
+    ) -> TokenStream {
+        let should_use_generic_params =
+            self.cx.node_tags(def_id).unwrap().contains::<GenericArgs>();
+        let decode_stream = if should_use_generic_params {
+            quote!(panic!())
+        } else {
+            decode(&DecodeHelper::new(false))
+        };
+        let decode_async_stream = if should_use_generic_params {
+            quote!(panic!())
+        } else {
+            decode(&DecodeHelper::new(true))
+        };
+        let name = self.rust_name(def_id).as_syn_ident();
+
+        let item = self.cx.item(def_id).unwrap();
+        let msg = match &*item {
+            rir::Item::Message(m) => m,
+            _ => panic!(),
+        };
+
+        let (name, generic_params) = if should_use_generic_params {
+            let generic_params = msg
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (&*format!("Arg{}", i + 1)).as_syn_ident())
+                .collect::<Vec<_>>();
+
+            let generic_params = if generic_params.is_empty() {
+                quote!()
+            } else {
+                quote!(<#(#generic_params),*>)
+            };
+            (
+                {
+                    let generic_params = generic_params.clone();
+                    quote!(#name #generic_params)
+                },
+                quote!(#generic_params),
+            )
+        } else {
+            (quote!(#name), quote!())
+        };
+
+        let type_bounds = if should_use_generic_params && !msg.fields.is_empty() {
+            let arg_bounds = msg.fields.iter().enumerate().map(|(i, f)| {
+                let arg_name = (&*format!("Arg{}", i + 1)).as_syn_ident();
+
+                let ty = self.codegen_item_ty(f.ty.kind.clone());
+
+                quote!(#arg_name: Send + ::std::borrow::Borrow<#ty>)
+            });
+            quote!(where #(#arg_bounds),*)
+        } else {
+            quote!()
+        };
+
+        let helper = &EncodeHelper {
+            borrowed_message: should_use_generic_params,
+        }; 
+
+        let encode = encode(helper);
+        let size = size(helper);
+        self.codegen_impl_message(
+            name,
+            generic_params,
+            encode,
+            size,
+            decode_stream,
+            decode_async_stream,
+            type_bounds,
+        )
     }
 
     fn codegen_decode(&self, helper: &DecodeHelper, s: &rir::Message) -> TokenStream {
@@ -284,12 +380,13 @@ impl CodegenBackend for ThriftBackend {
         stream: &mut proc_macro2::TokenStream,
         s: &Message,
     ) {
-        let name = self.cx.rust_name(def_id);
         let name_str = &**s.name;
-        let encode_fields = self.codegen_encode_fields(&s.fields);
-        let encode_fields_size = self.codegen_encode_fields_size(&s.fields);
-        stream.extend(self.codegen_impl_message_with_helper(
-            &name.as_syn_ident(),
+
+        stream.extend(self.codegen_struct_impl_message_with_helper(
+            def_id,
+        |helper| {
+            
+            let encode_fields = self.codegen_encode_fields(helper, &s.fields);
             quote! {
                 let struct_ident =::pilota::thrift::TStructIdentifier {
                     name: #name_str,
@@ -300,12 +397,15 @@ impl CodegenBackend for ThriftBackend {
                 protocol.write_field_stop()?;
                 protocol.write_struct_end()?;
                 Ok(())
-            },
-            quote! {
+            }},
+        |helper|{
+        let encode_fields_size = self.codegen_encode_fields_size(helper, &s.fields);
+                        quote! {
                 protocol.write_struct_begin_len(&::pilota::thrift::TStructIdentifier {
                     name: #name_str,
                 }) + #(#encode_fields_size+)*  protocol.write_field_stop_len() + protocol.write_struct_end_len()
-            },
+            }
+        },
             |helper| self.codegen_decode(helper, s),
         ));
     }
@@ -349,6 +449,7 @@ impl CodegenBackend for ThriftBackend {
                             ))?)
                     }
                 },
+                quote!(),
             )),
             None if is_entry_message => self.codegen_entry_enum(def_id, stream, e),
             None => {
@@ -359,7 +460,7 @@ impl CodegenBackend for ThriftBackend {
                     assert_eq!(v.fields.len(), 1);
                     let variant_id = v.id.unwrap() as i16;
                     let encode =
-                        self.codegen_encode_field(variant_id, &v.fields[0], &quote!(value));
+                        self.codegen_encode_field(variant_id, &v.fields[0], &EncodeHelper::default(), &quote!(value));
                     quote! {
                         #name::#variant_name(ref value) => {
                             #encode
@@ -370,7 +471,7 @@ impl CodegenBackend for ThriftBackend {
                 let variants_size = e.variants.iter().map(|v| {
                     let variant_name = self.rust_name(v.did).as_syn_ident();
                     let variant_id = v.id.unwrap() as i16;
-                    let size = self.codegen_field_size(&v.fields[0], variant_id, &quote! { value });
+                    let size = self.codegen_field_size(&v.fields[0], variant_id,  &EncodeHelper::default(), &quote! { value });
                     quote! {
                         #name::#variant_name(ref value) => {
                             #size
@@ -450,6 +551,7 @@ impl CodegenBackend for ThriftBackend {
                             }
                         }
                     },
+                    quote!(),
                 ))
             }
             #[allow(unreachable_patterns)]
@@ -480,6 +582,7 @@ impl CodegenBackend for ThriftBackend {
                 let decode = self.codegen_decode_ty(helper, &t.ty);
                 quote! { Ok(#name(#decode)) }
             },
+            quote!(),
         ));
     }
 }
